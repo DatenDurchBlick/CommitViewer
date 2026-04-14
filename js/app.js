@@ -280,14 +280,11 @@
   function _openDrawer() {
     _renderReposList();
     $('drawer-repos').classList.remove('hidden');
-    $('overlay').classList.remove('hidden');
-    $('overlay').onclick = _closeDrawer;
+    $('drawer-overlay').onclick = _closeDrawer;
   }
 
   function _closeDrawer() {
     $('drawer-repos').classList.add('hidden');
-    $('overlay').classList.add('hidden');
-    $('overlay').onclick = null;
   }
 
   function _renderReposList() {

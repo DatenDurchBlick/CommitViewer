@@ -130,17 +130,20 @@
 
   <!-- REPOS DRAWER -->
   <div id="drawer-repos" class="drawer hidden">
-    <div class="drawer-header">
-      <h2>Repositories</h2>
-      <button id="btn-close-repos" class="icon-btn">
-        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
-    </div>
-    <div id="repos-list" class="repos-list"></div>
-    <div class="drawer-footer">
-      <button id="btn-add-repo" class="btn-primary full-width">
-        + Repository hinzufügen
-      </button>
+    <div class="drawer-overlay" id="drawer-overlay"></div>
+    <div class="drawer-panel">
+      <div class="drawer-header">
+        <h2>Repositories</h2>
+        <button id="btn-close-repos" class="icon-btn">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <div id="repos-list" class="repos-list"></div>
+      <div class="drawer-footer">
+        <button id="btn-add-repo" class="btn-primary full-width">
+          + Repository hinzufügen
+        </button>
+      </div>
     </div>
   </div>
 

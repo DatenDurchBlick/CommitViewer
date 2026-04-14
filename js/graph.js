@@ -5,13 +5,13 @@
 
 const GitGraph = (() => {
   // Layout constants
-  const ROW_H      = 56;   // height per commit row
-  const COL_W      = 20;   // width per graph lane
-  const DOT_R      = 5;    // radius of commit dot
-  const PAD_LEFT   = 12;   // left padding before graph
-  const PAD_RIGHT  = 12;   // right padding
-  const TEXT_OFF   = 16;   // gap between last lane and text
-  const FONT_MSG   = '14px -apple-system, BlinkMacSystemFont, sans-serif';
+  const ROW_H      = 62;   // height per commit row (touch-friendly)
+  const COL_W      = 22;   // width per graph lane
+  const DOT_R      = 6;    // radius of commit dot
+  const PAD_LEFT   = 14;   // left padding before graph
+  const PAD_RIGHT  = 16;   // right padding
+  const TEXT_OFF   = 14;   // gap between last lane and text
+  const FONT_MSG   = '500 14px -apple-system, BlinkMacSystemFont, sans-serif';
   const FONT_META  = '12px -apple-system, BlinkMacSystemFont, sans-serif';
   const FONT_HASH  = '12px "SF Mono", Menlo, monospace';
 
@@ -41,7 +41,10 @@ const GitGraph = (() => {
     onCommitClick = clickCallback;
     dpr = window.devicePixelRatio || 1;
 
-    _resize();
+    // Use ResizeObserver for reliable sizing on mobile
+    const ro = new ResizeObserver(() => _resize());
+    ro.observe(canvas.parentElement);
+
     window.addEventListener('resize', _resize);
 
     canvas.addEventListener('touchstart',  _onTouchStart, { passive: true });
@@ -52,14 +55,23 @@ const GitGraph = (() => {
     canvas.addEventListener('mouseup',     _onMouseUp);
     canvas.addEventListener('wheel',       _onWheel,      { passive: true });
     canvas.addEventListener('click',       _onClick);
+
+    // Initial resize after layout settles
+    requestAnimationFrame(() => _resize());
   }
 
   function _resize() {
     if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    canvas.width  = rect.width  * dpr;
-    canvas.height = rect.height * dpr;
-    ctx.scale(dpr, dpr);
+    dpr = window.devicePixelRatio || 1;
+    const rect = canvas.parentElement.getBoundingClientRect();
+    const W = rect.width  || window.innerWidth;
+    const H = rect.height || window.innerHeight - 60;
+    canvas.width  = Math.round(W * dpr);
+    canvas.height = Math.round(H * dpr);
+    canvas.style.width  = W + 'px';
+    canvas.style.height = H + 'px';
+    // Reset transform completely to avoid accumulation
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     _computeMaxScroll();
     _draw();
   }
@@ -154,16 +166,17 @@ const GitGraph = (() => {
 
   function _computeMaxScroll() {
     if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
-    maxScrollY = Math.max(0, totalHeight - rect.height + ROW_H);
+    const H = canvas.height / dpr;
+    maxScrollY = Math.max(0, totalHeight - H + ROW_H);
   }
 
   // ── Drawing ───────────────────────────────────────────────────────────────
 
   function _draw() {
     if (!canvas || !ctx) return;
-    const rect = canvas.getBoundingClientRect();
-    const W = rect.width, H = rect.height;
+    const W = canvas.width  / dpr;
+    const H = canvas.height / dpr;
+    if (W <= 0 || H <= 0) return;
     ctx.clearRect(0, 0, W, H);
 
     if (!commits.length) return;
@@ -188,9 +201,32 @@ const GitGraph = (() => {
     function rowY(idx) { return idx * ROW_H + ROW_H / 2 - scrollY; }
     function laneX(l)  { return PAD_LEFT + l * COL_W + COL_W / 2; }
 
+    // Draw alternating row backgrounds
+    ctx.globalAlpha = 0.03;
+    for (let i = firstRow; i <= lastRow; i++) {
+      if (i % 2 === 0) {
+        const y = i * ROW_H - scrollY;
+        ctx.fillStyle = colorText;
+        ctx.fillRect(0, y, W, ROW_H);
+      }
+    }
+    ctx.globalAlpha = 1;
+
+    // Row separator lines
+    ctx.strokeStyle = colorBorder;
+    ctx.lineWidth = 0.5;
+    ctx.globalAlpha = 0.4;
+    for (let i = firstRow; i <= lastRow; i++) {
+      const y = (i + 1) * ROW_H - scrollY;
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(W, y);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
     // Draw edges first (behind dots)
     ctx.lineWidth = 2;
-    edges.forEach(e => {
       const y1 = rowY(e.fromIdx);
       const y2 = rowY(e.toIdx);
       // Skip if completely off-screen
@@ -222,6 +258,14 @@ const GitGraph = (() => {
       const x = laneX(lanes[i]);
       const color = c.color || '#6c63ff';
 
+      // Dot glow
+      ctx.beginPath();
+      ctx.arc(x, y, DOT_R + 4, 0, Math.PI * 2);
+      ctx.fillStyle = color;
+      ctx.globalAlpha = 0.15;
+      ctx.fill();
+      ctx.globalAlpha = 1;
+
       // Dot
       ctx.beginPath();
       ctx.arc(x, y, DOT_R, 0, Math.PI * 2);
@@ -237,7 +281,7 @@ const GitGraph = (() => {
         ctx.arc(x, y, DOT_R + 3, 0, Math.PI * 2);
         ctx.strokeStyle = color;
         ctx.lineWidth = 1.5;
-        ctx.globalAlpha = 0.5;
+        ctx.globalAlpha = 0.6;
         ctx.stroke();
         ctx.globalAlpha = 1;
       }
@@ -374,7 +418,9 @@ const GitGraph = (() => {
   function _onClick(e) {
     if (isDragging) return;
     const rect = canvas.getBoundingClientRect();
-    const cy = e.clientY - rect.top + scrollY;
+    // Use the visual touch/click position relative to the canvas
+    const clientY = e.changedTouches ? e.changedTouches[0].clientY : e.clientY;
+    const cy = clientY - rect.top + scrollY;
     const idx = Math.floor(cy / ROW_H);
     if (idx >= 0 && idx < commits.length && onCommitClick) {
       onCommitClick(commits[idx]);
