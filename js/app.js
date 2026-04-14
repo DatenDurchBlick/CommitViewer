@@ -204,7 +204,7 @@
 
   function _renderGraph(commits, branches) {
     const deserialized = _deserializeCommits(commits);
-    GitGraph.setData(deserialized, branches);
+    GitGraph.setData(deserialized);
   }
 
   function _setState(state, msg = '') {

@@ -1,430 +1,374 @@
 /**
  * Git Graph Renderer — Canvas-based, touch-optimized
- * Draws a git log --graph style visualization using HTML Canvas.
  */
 
 const GitGraph = (() => {
-  // Layout constants
-  const ROW_H      = 62;   // height per commit row (touch-friendly)
-  const COL_W      = 22;   // width per graph lane
-  const DOT_R      = 6;    // radius of commit dot
-  const PAD_LEFT   = 14;   // left padding before graph
-  const PAD_RIGHT  = 16;   // right padding
-  const TEXT_OFF   = 14;   // gap between last lane and text
-  const FONT_MSG   = '500 14px -apple-system, BlinkMacSystemFont, sans-serif';
-  const FONT_META  = '12px -apple-system, BlinkMacSystemFont, sans-serif';
-  const FONT_HASH  = '12px "SF Mono", Menlo, monospace';
+  const ROW_H     = 62;   // px per commit row
+  const COL_W     = 18;   // px per lane
+  const DOT_R     = 5;    // commit dot radius
+  const MAX_LANES = 5;    // cap lanes so text always has room
+  const PAD_L     = 10;
+  const PAD_R     = 12;
+  const TEXT_GAP  = 10;
 
-  let canvas, ctx, dpr;
-  let commits = [];       // array of commit objects from API
-  let branches = [];      // branch metadata
-  let lanes = [];         // lane index per commit
-  let edges = [];         // {from, to, fromLane, toLane, color}
-  let totalHeight = 0;
-  let maxLanes = 1;
-
-  // Scroll / touch state
-  let scrollY = 0;
-  let maxScrollY = 0;
-  let touchStartY = 0;
-  let touchLastY  = 0;
-  let velocity    = 0;
-  let animFrame   = null;
-  let isDragging  = false;
-
-  // Click callback
+  let canvas, ctx, dpr = 1;
+  let commits = [], lanes = [], edges = [], totalHeight = 0, maxLanes = 1;
+  let scrollY = 0, maxScrollY = 0;
+  let velocity = 0, animFrame = null;
+  let touchStartY = 0, touchLastY = 0, isDragging = false;
+  let mouseDown = false, mouseStartY = 0, mouseLastY = 0;
   let onCommitClick = null;
 
-  function init(canvasEl, clickCallback) {
+  // ── Colors ────────────────────────────────────────────────────────────────
+  // Detect at draw time so hot-swapping color scheme works
+  function _c() {
+    const dark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+    return {
+      text:    dark ? '#e8e8f0' : '#1a1a2e',
+      muted:   dark ? '#8888a8' : '#667788',
+      bg:      dark ? '#0d0d1a' : '#f4f4fc',
+      dotBg:   dark ? '#0d0d1a' : '#ffffff',
+      row:     dark ? 'rgba(255,255,255,0.025)' : 'rgba(0,0,0,0.025)',
+      sep:     dark ? 'rgba(255,255,255,0.05)'  : 'rgba(0,0,0,0.07)',
+    };
+  }
+
+  const BRANCH_COLORS = [
+    '#7c6ff7', '#f76f9d', '#f7a32e', '#2ed573',
+    '#1e90ff', '#f76348', '#a29bfe', '#00cec9',
+  ];
+
+  // ── Init ──────────────────────────────────────────────────────────────────
+  function init(canvasEl, clickCb) {
     canvas = canvasEl;
-    ctx    = canvas.getContext('2d');
-    onCommitClick = clickCallback;
-    dpr = window.devicePixelRatio || 1;
+    ctx = canvas.getContext('2d');
+    onCommitClick = clickCb;
 
-    // Use ResizeObserver for reliable sizing on mobile
-    const ro = new ResizeObserver(() => _resize());
-    ro.observe(canvas.parentElement);
-
+    new ResizeObserver(_resize).observe(canvas.parentElement);
     window.addEventListener('resize', _resize);
 
-    canvas.addEventListener('touchstart',  _onTouchStart, { passive: true });
-    canvas.addEventListener('touchmove',   _onTouchMove,  { passive: true });
-    canvas.addEventListener('touchend',    _onTouchEnd,   { passive: true });
-    canvas.addEventListener('mousedown',   _onMouseDown);
-    canvas.addEventListener('mousemove',   _onMouseMove);
-    canvas.addEventListener('mouseup',     _onMouseUp);
-    canvas.addEventListener('wheel',       _onWheel,      { passive: true });
-    canvas.addEventListener('click',       _onClick);
+    canvas.addEventListener('touchstart', _touchStart, { passive: true });
+    canvas.addEventListener('touchmove',  _touchMove,  { passive: true });
+    canvas.addEventListener('touchend',   _touchEnd,   { passive: true });
+    canvas.addEventListener('mousedown',  _mouseDown);
+    canvas.addEventListener('mousemove',  _mouseMove);
+    canvas.addEventListener('mouseup',    _mouseUp);
+    canvas.addEventListener('wheel',      _wheel, { passive: true });
+    canvas.addEventListener('click',      _click);
 
-    // Initial resize after layout settles
-    requestAnimationFrame(() => _resize());
+    requestAnimationFrame(_resize);
   }
 
   function _resize() {
     if (!canvas) return;
     dpr = window.devicePixelRatio || 1;
-    const rect = canvas.parentElement.getBoundingClientRect();
-    const W = rect.width  || window.innerWidth;
-    const H = rect.height || window.innerHeight - 60;
+    const p = canvas.parentElement.getBoundingClientRect();
+    const W = p.width  || window.innerWidth;
+    const H = p.height || (window.innerHeight - 60);
     canvas.width  = Math.round(W * dpr);
     canvas.height = Math.round(H * dpr);
     canvas.style.width  = W + 'px';
     canvas.style.height = H + 'px';
-    // Reset transform completely to avoid accumulation
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    _computeMaxScroll();
+    _calcMaxScroll();
     _draw();
   }
 
-  // ── Data Processing ──────────────────────────────────────────────────────
-
-  function setData(commitList, branchList) {
-    commits  = commitList;
-    branches = branchList;
-    scrollY  = 0;
+  // ── Data ──────────────────────────────────────────────────────────────────
+  function setData(commitList) {
+    commits = commitList;
+    scrollY = 0;
     velocity = 0;
     _buildGraph();
-    _computeMaxScroll();
+    _calcMaxScroll();
     _draw();
   }
 
-  /**
-   * Assign lanes to commits using a simple algorithm:
-   * - Maintain a set of active "lanes" (each tracking its current branch tip sha)
-   * - For each commit (sorted newest first):
-   *   - If a lane is waiting for this sha, reuse that lane
-   *   - Otherwise open a new lane
-   *   - Free lanes for parents
-   */
   function _buildGraph() {
     if (!commits.length) { lanes = []; edges = []; maxLanes = 1; totalHeight = 0; return; }
 
     const n = commits.length;
-    const shaIndex = new Map(commits.map((c, i) => [c.sha, i]));
-
-    // activeLanes[lane] = sha of the commit we're waiting for, or null
-    const activeLanes = [];
-    lanes = new Array(n).fill(-1);
+    const idx = new Map(commits.map((c, i) => [c.sha, i]));
+    const active = [];   // active[lane] = sha we're expecting, or null
+    lanes = new Array(n).fill(0);
     edges = [];
 
     for (let i = 0; i < n; i++) {
       const c = commits[i];
 
-      // Find lane reserved for this commit
-      let lane = activeLanes.indexOf(c.sha);
-
+      // Find reserved lane or claim a free one
+      let lane = active.indexOf(c.sha);
       if (lane === -1) {
-        // Find an empty lane or open new one
-        lane = activeLanes.indexOf(null);
-        if (lane === -1) { lane = activeLanes.length; activeLanes.push(null); }
+        lane = active.indexOf(null);
+        if (lane === -1) { lane = active.length; active.push(null); }
       }
+      // Cap lane index
+      lanes[i] = lane % MAX_LANES;
+      active[lane] = null;
 
-      lanes[i] = lane;
-      activeLanes[lane] = null;  // this lane is now free
-
-      // Reserve lanes for parents
       c.parents.forEach((pSha, pi) => {
-        const pIdx = shaIndex.get(pSha);
-        if (pIdx === undefined) return; // parent outside our window
+        const pIdx = idx.get(pSha);
+        if (pIdx === undefined) return;
 
-        let targetLane;
+        let tLane;
         if (pi === 0) {
-          // First parent continues on same lane if free, else first available
-          if (activeLanes[lane] === null) {
-            targetLane = lane;
-            activeLanes[lane] = pSha;
+          if (active[lane] === null) {
+            tLane = lane; active[lane] = pSha;
           } else {
-            targetLane = activeLanes.indexOf(null);
-            if (targetLane === -1) { targetLane = activeLanes.length; activeLanes.push(null); }
-            activeLanes[targetLane] = pSha;
+            tLane = active.indexOf(null);
+            if (tLane === -1) { tLane = active.length; active.push(null); }
+            active[tLane] = pSha;
           }
         } else {
-          // Merge parent: open new lane
-          targetLane = activeLanes.indexOf(null);
-          if (targetLane === -1) { targetLane = activeLanes.length; activeLanes.push(null); }
-          // Only reserve if not already reserved
-          if (!activeLanes.some((s, li) => s === pSha)) {
-            activeLanes[targetLane] = pSha;
+          // Merge parent: reuse existing reservation or open new
+          const existing = active.indexOf(pSha);
+          if (existing !== -1) {
+            tLane = existing;
           } else {
-            targetLane = activeLanes.indexOf(pSha);
+            tLane = active.indexOf(null);
+            if (tLane === -1) { tLane = active.length; active.push(null); }
+            active[tLane] = pSha;
           }
         }
 
         edges.push({
-          fromIdx:  i,
-          toIdx:    pIdx,
-          fromLane: lane,
-          toLane:   targetLane,
-          color:    c.color || '#6c63ff'
+          from: i,  to: pIdx,
+          fl: lane % MAX_LANES, tl: tLane % MAX_LANES,
+          color: c.color || BRANCH_COLORS[0]
         });
       });
     }
 
-    maxLanes = activeLanes.length || 1;
+    maxLanes = Math.min(active.length || 1, MAX_LANES);
     totalHeight = n * ROW_H;
   }
 
-  function _computeMaxScroll() {
+  function _calcMaxScroll() {
     if (!canvas) return;
     const H = canvas.height / dpr;
-    maxScrollY = Math.max(0, totalHeight - H + ROW_H);
+    maxScrollY = Math.max(0, totalHeight - H);
   }
 
-  // ── Drawing ───────────────────────────────────────────────────────────────
-
+  // ── Draw ──────────────────────────────────────────────────────────────────
   function _draw() {
     if (!canvas || !ctx) return;
-    const W = canvas.width  / dpr;
+    const W = canvas.width / dpr;
     const H = canvas.height / dpr;
     if (W <= 0 || H <= 0) return;
+
+    const c = _c();
     ctx.clearRect(0, 0, W, H);
 
     if (!commits.length) return;
 
-    const graphWidth = PAD_LEFT + maxLanes * COL_W;
-    const textX      = graphWidth + TEXT_OFF;
-    const isDark     = window.matchMedia('(prefers-color-scheme: dark)').matches
-                       || document.documentElement.style.colorScheme === 'dark'
-                       || true; // default dark
+    // Layout
+    const graphW = PAD_L + maxLanes * COL_W;
+    const textX  = graphW + TEXT_GAP;
+    const textW  = W - textX - PAD_R;
 
-    // Colors from CSS vars (we'll just use hex directly)
-    const colorText      = getComputedStyle(document.documentElement).getPropertyValue('--text').trim()       || '#e8e8f0';
-    const colorTextMuted = getComputedStyle(document.documentElement).getPropertyValue('--text-muted').trim() || '#8888a8';
-    const colorBg        = getComputedStyle(document.documentElement).getPropertyValue('--bg').trim()         || '#0d0d1a';
-    const colorBg2       = getComputedStyle(document.documentElement).getPropertyValue('--bg2').trim()        || '#151528';
-    const colorBorder    = getComputedStyle(document.documentElement).getPropertyValue('--border').trim()     || '#2a2a48';
+    function ry(i)  { return i * ROW_H + ROW_H / 2 - scrollY; }
+    function lx(l)  { return PAD_L + l * COL_W + COL_W / 2; }
 
-    // Visible range
-    const firstRow = Math.max(0, Math.floor(scrollY / ROW_H) - 1);
-    const lastRow  = Math.min(commits.length - 1, Math.ceil((scrollY + H) / ROW_H) + 1);
+    const first = Math.max(0, Math.floor(scrollY / ROW_H) - 1);
+    const last  = Math.min(commits.length - 1, Math.ceil((scrollY + H) / ROW_H) + 1);
 
-    function rowY(idx) { return idx * ROW_H + ROW_H / 2 - scrollY; }
-    function laneX(l)  { return PAD_LEFT + l * COL_W + COL_W / 2; }
-
-    // Draw alternating row backgrounds
-    ctx.globalAlpha = 0.03;
-    for (let i = firstRow; i <= lastRow; i++) {
+    // Alternating row tint
+    for (let i = first; i <= last; i++) {
       if (i % 2 === 0) {
-        const y = i * ROW_H - scrollY;
-        ctx.fillStyle = colorText;
-        ctx.fillRect(0, y, W, ROW_H);
+        ctx.fillStyle = c.row;
+        ctx.fillRect(0, i * ROW_H - scrollY, W, ROW_H);
       }
     }
-    ctx.globalAlpha = 1;
 
-    // Row separator lines
-    ctx.strokeStyle = colorBorder;
+    // Row separators
+    ctx.strokeStyle = c.sep;
     ctx.lineWidth = 0.5;
-    ctx.globalAlpha = 0.4;
-    for (let i = firstRow; i <= lastRow; i++) {
+    for (let i = first; i <= last; i++) {
       const y = (i + 1) * ROW_H - scrollY;
-      ctx.beginPath();
-      ctx.moveTo(0, y);
-      ctx.lineTo(W, y);
-      ctx.stroke();
+      ctx.beginPath(); ctx.moveTo(0, y); ctx.lineTo(W, y); ctx.stroke();
     }
-    ctx.globalAlpha = 1;
 
-    // Draw edges first (behind dots)
-    ctx.lineWidth = 2;
-      const y1 = rowY(e.fromIdx);
-      const y2 = rowY(e.toIdx);
-      // Skip if completely off-screen
+    // Graph column separator
+    ctx.strokeStyle = c.sep;
+    ctx.lineWidth = 1;
+    ctx.beginPath();
+    ctx.moveTo(graphW + TEXT_GAP / 2, 0);
+    ctx.lineTo(graphW + TEXT_GAP / 2, H);
+    ctx.stroke();
+
+    // Edges
+    ctx.lineWidth = 1.5;
+    edges.forEach(e => {
+      const y1 = ry(e.from), y2 = ry(e.to);
       if (y2 < -ROW_H || y1 > H + ROW_H) return;
-
-      const x1 = laneX(e.fromLane);
-      const x2 = laneX(e.toLane);
-
+      const x1 = lx(e.fl), x2 = lx(e.tl);
       ctx.strokeStyle = e.color;
-      ctx.globalAlpha = 0.7;
+      ctx.globalAlpha = 0.65;
       ctx.beginPath();
       ctx.moveTo(x1, y1);
-
       if (x1 === x2) {
         ctx.lineTo(x2, y2);
       } else {
-        // Bezier curve for merges
-        const mid = (y1 + y2) / 2;
-        ctx.bezierCurveTo(x1, mid, x2, mid, x2, y2);
+        const bend = Math.min(ROW_H * 0.7, Math.abs(y2 - y1) * 0.5);
+        ctx.bezierCurveTo(x1, y1 + bend, x2, y2 - bend, x2, y2);
       }
       ctx.stroke();
     });
     ctx.globalAlpha = 1;
 
-    // Draw commit dots & text
-    for (let i = firstRow; i <= lastRow; i++) {
-      const c = commits[i];
-      const y = rowY(i);
-      const x = laneX(lanes[i]);
-      const color = c.color || '#6c63ff';
+    // Dots + text
+    for (let i = first; i <= last; i++) {
+      const cm = commits[i];
+      const y  = ry(i);
+      const x  = lx(lanes[i]);
+      const col = cm.color || BRANCH_COLORS[0];
 
-      // Dot glow
+      // Glow
       ctx.beginPath();
-      ctx.arc(x, y, DOT_R + 4, 0, Math.PI * 2);
-      ctx.fillStyle = color;
-      ctx.globalAlpha = 0.15;
+      ctx.arc(x, y, DOT_R + 5, 0, Math.PI * 2);
+      ctx.fillStyle = col;
+      ctx.globalAlpha = 0.12;
       ctx.fill();
       ctx.globalAlpha = 1;
 
-      // Dot
+      // Dot fill
       ctx.beginPath();
       ctx.arc(x, y, DOT_R, 0, Math.PI * 2);
-      ctx.fillStyle = color;
+      ctx.fillStyle = col;
       ctx.fill();
-      ctx.strokeStyle = colorBg;
-      ctx.lineWidth = 2;
+
+      // Dot border
+      ctx.beginPath();
+      ctx.arc(x, y, DOT_R, 0, Math.PI * 2);
+      ctx.strokeStyle = c.dotBg;
+      ctx.lineWidth = 1.5;
       ctx.stroke();
 
-      // Merge commit: double ring
-      if (c.parents.length > 1) {
+      // Merge ring
+      if (cm.parents && cm.parents.length > 1) {
         ctx.beginPath();
         ctx.arc(x, y, DOT_R + 3, 0, Math.PI * 2);
-        ctx.strokeStyle = color;
-        ctx.lineWidth = 1.5;
-        ctx.globalAlpha = 0.6;
+        ctx.strokeStyle = col;
+        ctx.lineWidth = 1.2;
+        ctx.globalAlpha = 0.5;
         ctx.stroke();
         ctx.globalAlpha = 1;
       }
 
-      // Message
-      ctx.font = FONT_MSG;
-      ctx.fillStyle = colorText;
-      ctx.textBaseline = 'middle';
+      if (textW < 40) continue; // no room for text
 
-      const availW = W - textX - PAD_RIGHT;
-      let msg = c.message;
-      // Truncate if needed
-      if (ctx.measureText(msg).width > availW) {
-        while (msg.length > 5 && ctx.measureText(msg + '…').width > availW) {
-          msg = msg.slice(0, -1);
-        }
-        msg += '…';
-      }
-      ctx.fillText(msg, textX, y - 8);
+      // Commit message
+      ctx.font = '500 13px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.fillStyle = c.text;
+      ctx.textBaseline = 'alphabetic';
+      ctx.fillText(_trunc(ctx, cm.message, textW), textX, y - 5);
 
-      // Meta line: hash + author + date
-      ctx.font = FONT_META;
-      ctx.fillStyle = colorTextMuted;
-      const hashStr   = c.shortSha;
-      const authorStr = c.author;
-      const dateStr   = _relativeTime(c.date);
-      const metaStr   = `${hashStr}  ${authorStr}  ${dateStr}`;
-      ctx.fillText(metaStr, textX, y + 10);
+      // Meta: hash · author · date
+      ctx.font = '11px -apple-system, BlinkMacSystemFont, sans-serif';
+      ctx.fillStyle = c.muted;
+      const meta = `${cm.shortSha} · ${cm.author} · ${_rel(cm.date)}`;
+      ctx.fillText(_trunc(ctx, meta, textW), textX, y + 12);
 
-      // Branch tags (only for first 2)
-      if (c.branches && c.branches.length) {
-        let bx = textX + ctx.measureText(metaStr).width + 10;
-        c.branches.slice(0, 2).forEach(bname => {
-          const bw = ctx.measureText(bname).width + 10;
-          if (bx + bw > W - PAD_RIGHT) return;
-          ctx.fillStyle = color;
-          ctx.globalAlpha = 0.2;
-          _roundRect(ctx, bx, y + 3, bw, 16, 4);
+      // Branch badge on tip commit
+      if (cm.branches && cm.branches.length) {
+        const label = cm.branches[0];
+        ctx.font = '500 10px -apple-system, BlinkMacSystemFont, sans-serif';
+        const bw = ctx.measureText(label).width + 10;
+        const bx = W - PAD_R - bw;
+        if (bx > textX + 60) {
+          ctx.fillStyle = col;
+          ctx.globalAlpha = 0.15;
+          _rrect(bx, y - 9, bw, 14, 4);
           ctx.fill();
-          ctx.globalAlpha = 1;
-          ctx.strokeStyle = color;
+          ctx.globalAlpha = 0.7;
+          ctx.strokeStyle = col;
           ctx.lineWidth = 1;
-          _roundRect(ctx, bx, y + 3, bw, 16, 4);
+          _rrect(bx, y - 9, bw, 14, 4);
           ctx.stroke();
-          ctx.fillStyle = color;
-          ctx.fillText(bname, bx + 5, y + 11);
-          bx += bw + 6;
-        });
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = col;
+          ctx.fillText(label, bx + 5, y + 1);
+        }
       }
     }
   }
 
-  function _roundRect(ctx, x, y, w, h, r) {
+  function _trunc(ctx, text, maxW) {
+    if (ctx.measureText(text).width <= maxW) return text;
+    let t = text;
+    while (t.length > 3 && ctx.measureText(t + '…').width > maxW) t = t.slice(0, -1);
+    return t + '…';
+  }
+
+  function _rrect(x, y, w, h, r) {
     ctx.beginPath();
     ctx.moveTo(x + r, y);
-    ctx.lineTo(x + w - r, y);
-    ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-    ctx.lineTo(x + w, y + h - r);
-    ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-    ctx.lineTo(x + r, y + h);
-    ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-    ctx.lineTo(x, y + r);
-    ctx.quadraticCurveTo(x, y, x + r, y);
+    ctx.arcTo(x + w, y, x + w, y + h, r);
+    ctx.arcTo(x + w, y + h, x, y + h, r);
+    ctx.arcTo(x, y + h, x, y, r);
+    ctx.arcTo(x, y, x + w, y, r);
     ctx.closePath();
   }
 
-  function _relativeTime(date) {
-    const diff = (Date.now() - date.getTime()) / 1000;
-    if (diff < 60)           return 'gerade eben';
-    if (diff < 3600)         return `vor ${Math.floor(diff/60)} Min.`;
-    if (diff < 86400)        return `vor ${Math.floor(diff/3600)} Std.`;
-    if (diff < 86400 * 30)   return `vor ${Math.floor(diff/86400)} Tagen`;
-    if (diff < 86400 * 365)  return `vor ${Math.floor(diff/2592000)} Mon.`;
-    return `vor ${Math.floor(diff/31536000)} Jahren`;
+  function _rel(date) {
+    const s = (Date.now() - new Date(date).getTime()) / 1000;
+    if (s < 60)          return 'gerade';
+    if (s < 3600)        return `${Math.floor(s / 60)}m`;
+    if (s < 86400)       return `${Math.floor(s / 3600)}h`;
+    if (s < 86400 * 30)  return `${Math.floor(s / 86400)}d`;
+    if (s < 86400 * 365) return `${Math.floor(s / 2592000)} Mon.`;
+    return `${Math.floor(s / 31536000)}y`;
   }
 
-  // ── Scrolling ─────────────────────────────────────────────────────────────
+  // ── Scroll ────────────────────────────────────────────────────────────────
+  function _clamp() { scrollY = Math.max(0, Math.min(scrollY, maxScrollY)); }
 
-  function _clampScroll() {
-    scrollY = Math.max(0, Math.min(scrollY, maxScrollY));
-  }
-
-  function _animateInertia() {
-    if (Math.abs(velocity) < 0.5) { velocity = 0; return; }
+  function _inertia() {
+    if (Math.abs(velocity) < 0.3) { velocity = 0; return; }
     scrollY += velocity;
-    velocity *= 0.94;
-    _clampScroll();
-    _draw();
-    animFrame = requestAnimationFrame(_animateInertia);
+    velocity *= 0.92;
+    _clamp(); _draw();
+    animFrame = requestAnimationFrame(_inertia);
   }
 
-  function _onTouchStart(e) {
+  function _touchStart(e) {
     if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
     touchStartY = touchLastY = e.touches[0].clientY;
-    velocity = 0;
-    isDragging = false;
+    velocity = 0; isDragging = false;
   }
-
-  function _onTouchMove(e) {
+  function _touchMove(e) {
     const y = e.touches[0].clientY;
     const dy = touchLastY - y;
-    touchLastY = y;
-    velocity = dy;
-    if (Math.abs(y - touchStartY) > 5) isDragging = true;
-    scrollY += dy;
-    _clampScroll();
-    _draw();
+    touchLastY = y; velocity = dy;
+    if (Math.abs(y - touchStartY) > 4) isDragging = true;
+    scrollY += dy; _clamp(); _draw();
+  }
+  function _touchEnd() {
+    if (Math.abs(velocity) > 0.5) animFrame = requestAnimationFrame(_inertia);
   }
 
-  function _onTouchEnd(e) {
-    if (Math.abs(velocity) > 1) {
-      animFrame = requestAnimationFrame(_animateInertia);
-    }
-  }
-
-  let mouseDown = false, mouseStartY = 0, mouseLastY = 0;
-  function _onMouseDown(e) {
+  function _mouseDown(e) {
     if (animFrame) { cancelAnimationFrame(animFrame); animFrame = null; }
     mouseDown = true; mouseStartY = mouseLastY = e.clientY; velocity = 0; isDragging = false;
   }
-  function _onMouseMove(e) {
+  function _mouseMove(e) {
     if (!mouseDown) return;
-    const dy = mouseLastY - e.clientY;
-    mouseLastY = e.clientY;
-    velocity = dy;
-    if (Math.abs(e.clientY - mouseStartY) > 5) isDragging = true;
-    scrollY += dy; _clampScroll(); _draw();
+    const dy = mouseLastY - e.clientY; mouseLastY = e.clientY; velocity = dy;
+    if (Math.abs(e.clientY - mouseStartY) > 4) isDragging = true;
+    scrollY += dy; _clamp(); _draw();
   }
-  function _onMouseUp(e) { mouseDown = false; if (Math.abs(velocity) > 1) animFrame = requestAnimationFrame(_animateInertia); }
-  function _onWheel(e) { scrollY += e.deltaY; _clampScroll(); _draw(); }
+  function _mouseUp() {
+    mouseDown = false;
+    if (Math.abs(velocity) > 0.5) animFrame = requestAnimationFrame(_inertia);
+  }
+  function _wheel(e) { scrollY += e.deltaY; _clamp(); _draw(); }
 
-  // ── Click / tap ───────────────────────────────────────────────────────────
-
-  function _onClick(e) {
+  function _click(e) {
     if (isDragging) return;
     const rect = canvas.getBoundingClientRect();
-    // Use the visual touch/click position relative to the canvas
-    const clientY = e.changedTouches ? e.changedTouches[0].clientY : e.clientY;
-    const cy = clientY - rect.top + scrollY;
-    const idx = Math.floor(cy / ROW_H);
-    if (idx >= 0 && idx < commits.length && onCommitClick) {
-      onCommitClick(commits[idx]);
-    }
+    const cy = e.clientY - rect.top + scrollY;
+    const i = Math.floor(cy / ROW_H);
+    if (i >= 0 && i < commits.length && onCommitClick) onCommitClick(commits[i]);
   }
 
   return { init, setData };
