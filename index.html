@@ -1,0 +1,229 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <meta name="theme-color" content="#1a1a2e" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="CommitViewer" />
+  <title>CommitViewer</title>
+  <link rel="manifest" href="manifest.json" />
+  <link rel="apple-touch-icon" href="icons/icon-192.png" />
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- SETUP SCREEN -->
+  <div id="screen-setup" class="screen active">
+    <div class="setup-container">
+      <div class="setup-logo">
+        <svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect width="64" height="64" rx="16" fill="#6c63ff"/>
+          <circle cx="16" cy="16" r="5" fill="white"/>
+          <circle cx="16" cy="32" r="5" fill="white"/>
+          <circle cx="16" cy="48" r="5" fill="#a8a4ff"/>
+          <circle cx="48" cy="12" r="5" fill="#ff6b9d"/>
+          <circle cx="48" cy="28" r="5" fill="#ff6b9d"/>
+          <line x1="16" y1="21" x2="16" y2="27" stroke="white" stroke-width="2"/>
+          <line x1="16" y1="37" x2="16" y2="43" stroke="#a8a4ff" stroke-width="2"/>
+          <line x1="16" y1="19" x2="45" y2="14" stroke="white" stroke-width="2"/>
+          <line x1="16" y1="35" x2="45" y2="25" stroke="#a8a4ff" stroke-width="2"/>
+          <line x1="48" y1="17" x2="48" y2="23" stroke="#ff6b9d" stroke-width="2"/>
+        </svg>
+      </div>
+      <h1>CommitViewer</h1>
+      <p class="setup-subtitle">Git-Graphen direkt auf deinem iPhone</p>
+
+      <div class="card">
+        <h2>Einrichtung</h2>
+
+        <div class="form-group">
+          <label for="input-token">GitHub Personal Access Token</label>
+          <div class="input-with-btn">
+            <input type="password" id="input-token" placeholder="ghp_xxxxxxxxxxxx" autocomplete="off" />
+            <button type="button" id="btn-toggle-token" class="icon-btn" title="Token anzeigen">
+              <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
+          <a href="https://github.com/settings/tokens/new?description=CommitViewer&scopes=repo,public_repo" target="_blank" class="help-link">
+            Token auf GitHub erstellen →
+          </a>
+        </div>
+
+        <div class="form-group">
+          <label for="input-repo">Repository</label>
+          <input type="text" id="input-repo" placeholder="owner/repository" autocomplete="off" />
+        </div>
+
+        <div id="setup-error" class="error-msg hidden"></div>
+
+        <button id="btn-setup-save" class="btn-primary">
+          <span id="btn-setup-label">Speichern & Graph laden</span>
+          <span id="btn-setup-spinner" class="spinner hidden"></span>
+        </button>
+      </div>
+
+      <p class="privacy-note">Token wird nur lokal gespeichert – keine externen Server.</p>
+    </div>
+  </div>
+
+  <!-- MAIN SCREEN -->
+  <div id="screen-main" class="screen">
+    <header class="app-header">
+      <button id="btn-repos" class="icon-btn header-btn" title="Repositories">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+      </button>
+      <div class="header-title">
+        <span id="header-repo-name">Repository</span>
+        <span id="header-branch-name" class="header-branch"></span>
+      </div>
+      <div class="header-actions">
+        <button id="btn-refresh" class="icon-btn header-btn" title="Aktualisieren">
+          <svg id="refresh-icon" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+        </button>
+        <button id="btn-settings" class="icon-btn header-btn" title="Einstellungen">
+          <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        </button>
+      </div>
+    </header>
+
+    <div id="rate-limit-bar" class="rate-limit-bar hidden">
+      <span id="rate-limit-text"></span>
+    </div>
+
+    <div id="graph-container">
+      <div id="loading-state" class="state-display hidden">
+        <div class="spinner large"></div>
+        <p>Lade Commits…</p>
+      </div>
+      <div id="error-state" class="state-display hidden">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+        <p id="error-state-msg">Fehler beim Laden</p>
+        <button id="btn-retry" class="btn-secondary">Nochmal versuchen</button>
+      </div>
+      <div id="empty-state" class="state-display hidden">
+        <p>Keine Commits gefunden</p>
+      </div>
+      <canvas id="graph-canvas"></canvas>
+    </div>
+
+    <!-- Commit detail panel -->
+    <div id="commit-panel" class="commit-panel hidden">
+      <div class="panel-handle"></div>
+      <div class="panel-content">
+        <div class="commit-hash-row">
+          <code id="panel-hash"></code>
+          <button id="btn-close-panel" class="icon-btn">
+            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          </button>
+        </div>
+        <p id="panel-message" class="panel-message"></p>
+        <div class="panel-meta">
+          <span id="panel-author"></span>
+          <span id="panel-date"></span>
+        </div>
+        <div id="panel-branches" class="panel-branches"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- REPOS DRAWER -->
+  <div id="drawer-repos" class="drawer hidden">
+    <div class="drawer-header">
+      <h2>Repositories</h2>
+      <button id="btn-close-repos" class="icon-btn">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+      </button>
+    </div>
+    <div id="repos-list" class="repos-list"></div>
+    <div class="drawer-footer">
+      <button id="btn-add-repo" class="btn-primary full-width">
+        + Repository hinzufügen
+      </button>
+    </div>
+  </div>
+
+  <!-- ADD REPO MODAL -->
+  <div id="modal-add-repo" class="modal hidden">
+    <div class="modal-card">
+      <h2>Repository hinzufügen</h2>
+      <div class="form-group">
+        <label for="input-new-repo">Repository</label>
+        <input type="text" id="input-new-repo" placeholder="owner/repository" />
+      </div>
+      <div id="add-repo-error" class="error-msg hidden"></div>
+      <div class="modal-actions">
+        <button id="btn-cancel-repo" class="btn-secondary">Abbrechen</button>
+        <button id="btn-confirm-repo" class="btn-primary">Hinzufügen</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- SETTINGS SCREEN -->
+  <div id="screen-settings" class="screen">
+    <header class="app-header">
+      <button id="btn-back-settings" class="icon-btn header-btn" title="Zurück">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="15 18 9 12 15 6"/></svg>
+      </button>
+      <div class="header-title">Einstellungen</div>
+      <div style="width:40px"></div>
+    </header>
+    <div class="settings-content">
+      <div class="settings-section">
+        <h3>GitHub Token</h3>
+        <div class="card">
+          <div class="form-group">
+            <label for="settings-token">Personal Access Token</label>
+            <div class="input-with-btn">
+              <input type="password" id="settings-token" placeholder="ghp_xxxxxxxxxxxx" />
+              <button type="button" id="btn-toggle-settings-token" class="icon-btn" title="Token anzeigen">
+                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/><circle cx="12" cy="12" r="3"/></svg>
+              </button>
+            </div>
+          </div>
+          <button id="btn-save-token" class="btn-primary">Token speichern</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Graph</h3>
+        <div class="card">
+          <div class="form-group">
+            <label for="settings-commit-count">Anzahl Commits</label>
+            <select id="settings-commit-count">
+              <option value="50">50</option>
+              <option value="100" selected>100</option>
+              <option value="200">200</option>
+              <option value="500">500</option>
+            </select>
+          </div>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Daten</h3>
+        <div class="card">
+          <button id="btn-clear-cache" class="btn-secondary full-width">Cache leeren</button>
+          <button id="btn-reset-app" class="btn-danger full-width" style="margin-top:8px">App zurücksetzen</button>
+        </div>
+      </div>
+
+      <div class="settings-section">
+        <h3>Info</h3>
+        <div class="card info-card">
+          <p>CommitViewer v1.0</p>
+          <p class="text-muted">Token wird nur lokal im Browser gespeichert. Es werden keine Daten an externe Server gesendet.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- OVERLAY -->
+  <div id="overlay" class="overlay hidden"></div>
+
+  <script src="js/github-api.js"></script>
+  <script src="js/graph.js"></script>
+  <script src="js/app.js"></script>
+</body>
+</html>
